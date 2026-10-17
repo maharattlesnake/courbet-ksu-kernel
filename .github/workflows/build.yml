@@ -76,33 +76,53 @@ jobs:
           LDBIN="$GITHUB_WORKSPACE/clang/bin/aarch64-linux-gnu-ld"
           ls -l "$LDBIN"
 
-          # Fix 4: clang assembler rejects '.weak' placed before ENTRY() (memcpy/memmove/memset binding error)
+          # Fix 4: clang assembler rejects '.weak' placed before ENTRY() (memcpy/memmove/memset)
           for f in memcpy memmove memset; do
             F=arch/arm64/lib/$f.S
-            echo "--- $F BEFORE ---"
-            grep -n -E "weak|ENTRY|WEAK" $F
             sed -i "/^[[:space:]]*\.weak[[:space:]]\+$f\$/d; s/^ENTRY($f)/WEAK($f)/" $F
-            echo "--- $F AFTER ---"
-            grep -n -E "weak|ENTRY|WEAK" $F
           done
 
-          set -o pipefail
+          # Fix 5: duplicate DT label error (new dtc is stricter) -> force dtb output
+          echo "--- duplicate label definitions ---"
+          grep -rn "fsa_usbc_ana_en:" arch/arm64/boot/dts | head -n 10 || true
+          echo 'DTC_FLAGS += -f' >> arch/arm64/boot/dts/qcom/Makefile
+
           make O=out ARCH=arm64 "$DEFCONFIG_NAME"
-          make -k -j$(nproc --all) O=out ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            KCFLAGS="-fuse-ld=$LDBIN -Qunused-arguments" \
-            2>&1 | tee ../build.log || {
-              set +e
-              set +o pipefail
-              echo "=========== BUILD FAILED ==========="
-              grep -n -E "error:|Error |Error:|ERROR|FATAL|No rule|undefined reference|fatal|unrecognised" ../build.log | grep -v "extract-cert" | head -n 40
-              echo "=========== DTB ERROR CONTEXT ==========="
-              grep -n -F -B12 "sdmmagpie.dtb] Error" ../build.log | head -n 60
-              exit 1
-            }
+
+          run_make() {
+            make -k -j$(nproc --all) O=out ARCH=arm64 \
+              CC=clang \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+              KCFLAGS="-fuse-ld=$LDBIN -Qunused-arguments" \
+              "$@"
+          }
+
+          set +e
+          run_make 2>&1 | tee ../build.log
+          STATUS=${PIPESTATUS[0]}
+
+          if [ $STATUS -ne 0 ]; then
+            echo "=========== ATTEMPT 1 FAILED ==========="
+            grep -n -E "error:|Error:|ERROR|undefined reference" ../build.log | grep -v "extract-cert" | head -n 20
+            echo "=========== objects with dangerous relocation ==========="
+            grep "dangerous relocation" ../build.log | sed 's/:(.*//' | sort | uniq -c | sort -rn | head -n 15
+            echo "=========== gsi.o info ==========="
+            readelf -h out/drivers/platform/msm/gsi/gsi.o | grep -E "Class|Machine|Data"
+            readelf -rW out/drivers/platform/msm/gsi/gsi.o | awk '{print $3}' | sort | uniq -c | sort -rn | head -n 8
+            echo "=========== RETRY WITH LLD LINKER ==========="
+            run_make LD=ld.lld 2>&1 | tee ../build2.log
+            STATUS=${PIPESTATUS[0]}
+          fi
+
+          if [ $STATUS -ne 0 ]; then
+            echo "=========== BUILD FAILED ==========="
+            grep -n -E "error:|Error:|ERROR|undefined reference|unsupported|ld.lld" ../build2.log | head -n 30
+            exit 1
+          fi
+          echo "=========== BUILD OK ==========="
+          ls -l out/arch/arm64/boot
 
       - name: Pack with AnyKernel3
         run: |
@@ -138,4 +158,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: build.log
+          path: |
+            build.log
+            build2.log
