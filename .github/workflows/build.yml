@@ -12,13 +12,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libncurses5-dev libssl-dev libelf-dev git zip curl wget python3 device-tree-compiler lz4 cpio gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-      - name: Install libtinfo5
+      - name: Clone Toolchain (AOSP Clang r383902b)
         run: |
-          sudo apt-get install -y libtinfo5 libncurses5 || true
-
-      - name: Clone toolchain (Proton Clang)
-        run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r383902b.git clang
 
       - name: Clone kernel source
         run: |
@@ -29,34 +25,23 @@ jobs:
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
-      - name: Fix VDSO and Update defconfig
+      - name: Update defconfig for KSU
         run: |
           cd kernel-source
-          
-          # Disable VDSO compilation in arch/arm64/Makefile
-          sed -i 's/vdso_prepare//g' arch/arm64/Makefile || true
-          
           if [ -f arch/arm64/configs/courbet_user_defconfig ]; then
             DEFCONFIG=arch/arm64/configs/courbet_user_defconfig
           else
             DEFCONFIG=arch/arm64/configs/vendor/courbet_user_defconfig
           fi
           echo "Defconfig: $DEFCONFIG"
-          if [ ! -f "$DEFCONFIG" ]; then
-            echo "courbet_user_defconfig not found"
-            exit 1
-          fi
           echo "$DEFCONFIG" > ../defconfig_path.txt
+          
           cat >> "$DEFCONFIG" << 'EOF'
           CONFIG_KSU=y
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
-          CONFIG_VDSO=n
-          CONFIG_CC_STACKPROTECTOR_NONE=y
           EOF
-          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g' "$DEFCONFIG"
-          sed -i 's/CONFIG_CC_STACKPROTECTOR_AUTO=y/# CONFIG_CC_STACKPROTECTOR_AUTO is not set/g' "$DEFCONFIG"
 
       - name: Build kernel
         run: |
@@ -67,6 +52,7 @@ jobs:
           DEFCONFIG=$(cat ../defconfig_path.txt)
           DEFCONFIG_NAME=${DEFCONFIG#arch/arm64/configs/}
 
+          # Remove -Werror and fix assembler flags
           sed -i 's/-Werror//g' scripts/Makefile.host || true
           sed -i 's/prepare-compiler-check//g' Makefile || true
 
@@ -74,19 +60,16 @@ jobs:
           make O=out ARCH=arm64 "$DEFCONFIG_NAME"
           make -j$(nproc --all) O=out ARCH=arm64 \
             CC=clang \
-            HOSTCC=gcc \
-            HOSTCXX=g++ \
-            HOST_EXTRACFLAGS="-Wno-error=deprecated-declarations" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
             2>&1 | tee ../build.log || {
               set +e
               set +o pipefail
               echo "=========== BUILD FAILED ==========="
-              grep -n -E "error:|Error |No rule|undefined|fatal" ../build.log | head -n 30
-              echo "=========== LAST 40 LINES ==========="
-              tail -n 40 ../build.log
+              tail -n 50 ../build.log
               exit 1
             }
 
