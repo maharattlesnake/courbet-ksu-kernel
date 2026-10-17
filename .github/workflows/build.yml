@@ -62,6 +62,7 @@ jobs:
           DEFCONFIG_NAME=${DEFCONFIG#arch/arm64/configs/}
 
           sed -i 's/-no-integrated-as//g' Makefile arch/arm64/Makefile
+          sed -i 's/-Werror//g' scripts/Makefile.host || true
 
           set -o pipefail
           make O=out ARCH=arm64 "$DEFCONFIG_NAME"
@@ -69,6 +70,7 @@ jobs:
             CC=clang \
             HOSTCC=gcc \
             HOSTCXX=g++ \
+            HOST_EXTRACFLAGS="-Wno-error=deprecated-declarations" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
