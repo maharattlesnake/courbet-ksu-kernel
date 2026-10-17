@@ -12,7 +12,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libncurses5-dev libssl-dev libelf-dev git zip curl wget python3 device-tree-compiler lz4 cpio gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-      - name: Install libtinfo5 (needed by Proton Clang)
+      - name: Install libtinfo5
         run: |
           sudo apt-get install -y libtinfo5 libncurses5 || true
 
@@ -67,6 +67,8 @@ jobs:
           make O=out ARCH=arm64 "$DEFCONFIG_NAME"
           make -j$(nproc --all) O=out ARCH=arm64 \
             CC=clang \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
@@ -91,4 +93,13 @@ jobs:
           elif [ -f $BOOT/Image.gz ]; then
             cp $BOOT/Image.gz AnyKernel3/
           else
-            cp
+            cp $BOOT/Image AnyKernel3/
+          fi
+          cd AnyKernel3
+          zip -r9 ../KernelSU-Next-Courbet.zip * -x .git README.md
+
+      - name: Upload Kernel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KernelSU-Next-Courbet
+          path: KernelSU-Next-Courbet.zip
