@@ -76,6 +76,16 @@ jobs:
           LDBIN="$GITHUB_WORKSPACE/clang/bin/aarch64-linux-gnu-ld"
           ls -l "$LDBIN"
 
+          # Fix 4: clang assembler rejects '.weak' placed before ENTRY() (memcpy/memmove/memset binding error)
+          for f in memcpy memmove memset; do
+            F=arch/arm64/lib/$f.S
+            echo "--- $F BEFORE ---"
+            grep -n -E "weak|ENTRY|WEAK" $F
+            sed -i "/^[[:space:]]*\.weak[[:space:]]\+$f\$/d; s/^ENTRY($f)/WEAK($f)/" $F
+            echo "--- $F AFTER ---"
+            grep -n -E "weak|ENTRY|WEAK" $F
+          done
+
           set -o pipefail
           make O=out ARCH=arm64 "$DEFCONFIG_NAME"
           make -k -j$(nproc --all) O=out ARCH=arm64 \
@@ -88,9 +98,9 @@ jobs:
               set +e
               set +o pipefail
               echo "=========== BUILD FAILED ==========="
-              grep -n -E "error:|Error |No rule|undefined reference|fatal|unrecognised" ../build.log | grep -v "extract-cert" | head -n 40
-              echo "=========== aes-modes.S lines 295-302 ==========="
-              sed -n '295,302p' arch/arm64/crypto/aes-modes.S
+              grep -n -E "error:|Error |Error:|ERROR|FATAL|No rule|undefined reference|fatal|unrecognised" ../build.log | grep -v "extract-cert" | head -n 40
+              echo "=========== DTB ERROR CONTEXT ==========="
+              grep -n -F -B12 "sdmmagpie.dtb] Error" ../build.log | head -n 60
               exit 1
             }
 
