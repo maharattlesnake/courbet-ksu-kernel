@@ -12,14 +12,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libncurses5-dev libssl-dev libelf-dev git zip curl wget python3 device-tree-compiler lz4 cpio gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-      - name: Install libtinfo5
-        run: |
-          sudo apt-get install -y libtinfo5 libncurses5 || true
-
-      - name: Clone toolchain (Proton Clang)
-        run: |
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
-
       - name: Clone kernel source
         run: |
           git clone --depth=1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource -b courbet-r-oss kernel-source
@@ -29,7 +21,7 @@ jobs:
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
-      - name: Update defconfig for KSU and Stack Protector
+      - name: Update defconfig for KSU
         run: |
           cd kernel-source
           if [ -f arch/arm64/configs/courbet_user_defconfig ]; then
@@ -48,33 +40,20 @@ jobs:
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
-          CONFIG_VDSO=n
-          CONFIG_CC_STACKPROTECTOR_NONE=y
           EOF
-          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g' "$DEFCONFIG"
-          sed -i 's/CONFIG_CC_STACKPROTECTOR_AUTO=y/# CONFIG_CC_STACKPROTECTOR_AUTO is not set/g' "$DEFCONFIG"
-          tail -n 10 "$DEFCONFIG"
+          tail -n 6 "$DEFCONFIG"
 
-      - name: Build kernel
+      - name: Build kernel with GCC
         run: |
           cd kernel-source
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
           DEFCONFIG=$(cat ../defconfig_path.txt)
           DEFCONFIG_NAME=${DEFCONFIG#arch/arm64/configs/}
 
-          sed -i 's/-Werror//g' scripts/Makefile.host || true
-          sed -i 's/prepare-compiler-check//g' Makefile || true
-
           set -o pipefail
           make O=out ARCH=arm64 "$DEFCONFIG_NAME"
           make -j$(nproc --all) O=out ARCH=arm64 \
-            CC=clang \
-            HOSTCC=gcc \
-            HOSTCXX=g++ \
-            HOST_EXTRACFLAGS="-Wno-error=deprecated-declarations" \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             2>&1 | tee ../build.log || {
