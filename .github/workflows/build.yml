@@ -61,11 +61,16 @@ jobs:
           DEFCONFIG=$(cat ../defconfig_path.txt)
           DEFCONFIG_NAME=${DEFCONFIG#arch/arm64/configs/}
 
-          echo "--- integrated-as references BEFORE fix ---"
-          grep -rIn "integrated-as" Makefile arch/arm64 scripts --include="Makefile*" --include="*.include" --include="*.mk" || echo "none"
+          # Fix 1: use clang integrated assembler (host x86 'as' does not know ARM64 options)
           grep -rIl "integrated-as" Makefile arch/arm64 scripts --include="Makefile*" --include="*.include" --include="*.mk" | xargs -r sed -i 's/-f\?no-integrated-as//g'
-          echo "--- integrated-as references AFTER fix ---"
-          grep -rIn "integrated-as" Makefile arch/arm64 scripts --include="Makefile*" --include="*.include" --include="*.mk" || echo "none"
+
+          # Fix 2: vdso macro call has an extra comma that clang's assembler rejects
+          VDSO=arch/arm64/kernel/vdso/gettimeofday.S
+          echo "--- vdso lines BEFORE fix ---"
+          grep -n "clock_gettime_return" $VDSO || true
+          sed -i 's/^\([[:space:]]\+\)clock_gettime_return,/\1clock_gettime_return/' $VDSO
+          echo "--- vdso lines AFTER fix ---"
+          grep -n "clock_gettime_return" $VDSO || true
 
           set -o pipefail
           make O=out ARCH=arm64 "$DEFCONFIG_NAME"
@@ -78,9 +83,7 @@ jobs:
               set +e
               set +o pipefail
               echo "=========== BUILD FAILED ==========="
-              grep -n -E "error:|Error |No rule|undefined|fatal" ../build.log | head -n 30
-              echo "=========== LAST 40 LINES ==========="
-              tail -n 40 ../build.log
+              grep -n -E "error:|Error |No rule|undefined reference|fatal" ../build.log | head -n 30
               exit 1
             }
 
@@ -106,16 +109,3 @@ jobs:
           sed -i 's/^BLOCK=.*/BLOCK=boot;/' anykernel.sh
           sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=auto;/' anykernel.sh
           zip -r9 ../KernelSU-Next-Courbet.zip * -x .git README.md
-
-      - name: Upload kernel artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: KernelSU-Next-Courbet
-          path: KernelSU-Next-Courbet.zip
-
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: build.log
