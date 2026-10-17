@@ -51,10 +51,12 @@ jobs:
           # CONFIG_CRYPTO_AES_ARM64_CE_BLK is not set
           # CONFIG_CRYPTO_AES_ARM64_NEON_BLK is not set
           # CONFIG_CRYPTO_AES_ARM64_BS is not set
+          # CONFIG_RANDOMIZE_BASE is not set
+          # CONFIG_RELOCATABLE is not set
           EOF
           sed -i 's/^[[:space:]]*\(CONFIG_[A-Z_0-9]*=y\)$/\1/' "$DEFCONFIG"
           sed -i 's/^[[:space:]]*\(# CONFIG_[A-Z_0-9]* is not set\)$/\1/' "$DEFCONFIG"
-          tail -n 8 "$DEFCONFIG"
+          tail -n 10 "$DEFCONFIG"
 
       - name: Build kernel
         run: |
@@ -88,6 +90,8 @@ jobs:
           echo 'DTC_FLAGS += -f' >> arch/arm64/boot/dts/qcom/Makefile
 
           make O=out ARCH=arm64 "$DEFCONFIG_NAME"
+          echo "--- relocation related config ---"
+          grep -E "CONFIG_RELOCATABLE|CONFIG_RANDOMIZE_BASE|CONFIG_MODVERSIONS" out/.config || true
 
           run_make() {
             make -k -j$(nproc --all) O=out ARCH=arm64 \
@@ -106,11 +110,6 @@ jobs:
           if [ $STATUS -ne 0 ]; then
             echo "=========== ATTEMPT 1 FAILED ==========="
             grep -n -E "error:|Error:|ERROR|undefined reference" ../build.log | grep -v "extract-cert" | head -n 20
-            echo "=========== objects with dangerous relocation ==========="
-            grep "dangerous relocation" ../build.log | sed 's/:(.*//' | sort | uniq -c | sort -rn | head -n 15
-            echo "=========== gsi.o info ==========="
-            readelf -h out/drivers/platform/msm/gsi/gsi.o | grep -E "Class|Machine|Data"
-            readelf -rW out/drivers/platform/msm/gsi/gsi.o | awk '{print $3}' | sort | uniq -c | sort -rn | head -n 8
             echo "=========== RETRY WITH LLD LINKER ==========="
             run_make LD=ld.lld 2>&1 | tee ../build2.log
             STATUS=${PIPESTATUS[0]}
