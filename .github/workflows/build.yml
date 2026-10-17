@@ -1,0 +1,134 @@
+name: Build Courbet KernelSU-Next
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libncurses5-dev libssl-dev libelf-dev git zip curl wget python3 device-tree-compiler lz4 cpio gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+
+      - name: Install libtinfo5 (needed by Proton Clang)
+        run: |
+          sudo apt-get install -y libtinfo5 libncurses5 || true
+
+      - name: Clone toolchain (Proton Clang)
+        run: |
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+
+      - name: Verify toolchain
+        run: |
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          which clang
+          clang --version || true
+          ldd "$GITHUB_WORKSPACE/clang/bin/clang" | grep "not found" || echo "ldd: no missing libs"
+          echo 'int main(void){return 0;}' > /tmp/t.c
+          clang --target=aarch64-linux-gnu -fstack-protector-strong -c /tmp/t.c -o /tmp/t.o && echo "COMPILE TEST OK" || echo "COMPILE TEST FAILED"
+
+      - name: Clone kernel source
+        run: |
+          git clone --depth=1 https://github.com/MiCode/Xiaomi_Kernel_OpenSource -b courbet-r-oss kernel-source
+
+      - name: Integrate KernelSU-Next (legacy)
+        run: |
+          cd kernel-source
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+
+      - name: Enable KSU in defconfig
+        run: |
+          cd kernel-source
+          if [ -f arch/arm64/configs/courbet_user_defconfig ]; then
+            DEFCONFIG=arch/arm64/configs/courbet_user_defconfig
+          else
+            DEFCONFIG=arch/arm64/configs/vendor/courbet_user_defconfig
+          fi
+          echo "Defconfig: $DEFCONFIG"
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "courbet_user_defconfig not found"
+            exit 1
+          fi
+          echo "$DEFCONFIG" > ../defconfig_path.txt
+          cat >> "$DEFCONFIG" << 'EOF'
+          CONFIG_KSU=y
+          CONFIG_KPROBES=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          EOF
+          # remove accidental leading spaces from heredoc
+          sed -i 's/^[[:space:]]*\(CONFIG_[A-Z_]*=y\)$/\1/' "$DEFCONFIG"
+          tail -n 6 "$DEFCONFIG"
+
+      - name: Build kernel
+        run: |
+          cd kernel-source
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          DEFCONFIG=$(cat ../defconfig_path.txt)
+          DEFCONFIG_NAME=${DEFCONFIG#arch/arm64/configs/}
+
+          # Fix: clang was calling the host x86 'as' (-no-integrated-as) -> "unrecognized option -EL"
+          sed -i 's/-no-integrated-as//g' Makefile arch/arm64/Makefile
+          grep -n "no-integrated-as" Makefile arch/arm64/Makefile || echo "no-integrated-as removed"
+
+          set -o pipefail
+          make O=out ARCH=arm64 "$DEFCONFIG_NAME"
+          make -j$(nproc --all) O=out ARCH=arm64 \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            2>&1 | tee ../build.log || {
+              set +e
+              set +o pipefail
+              echo "=========== BUILD FAILED ==========="
+              grep -n -m 20 -E "error|Error|Cannot use|not supported" ../build.log
+              echo "--- toolchain binaries ---"
+              ls "$GITHUB_WORKSPACE"/clang/bin | grep -E "aarch64-linux-gnu-(as|ld|elfedit)" || echo "no aarch64-linux-gnu-* in clang/bin"
+              which aarch64-linux-gnu-elfedit aarch64-linux-gnu-as || true
+              echo "--- compiler flag test (real clang error) ---"
+              FLAGS=$(make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- -pn 2>/dev/null | grep -m1 -E '^KBUILD_CFLAGS ' | sed 's/^[^=]*= *//')
+              echo "FLAGS: $FLAGS"
+              eval clang $FLAGS -fstack-protector-strong -c -x c /dev/null -o /dev/null 2>&1 | head -n 20
+              exit 1
+            }
+
+      - name: Pack with AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          BOOT=kernel-source/out/arch/arm64/boot
+          if [ -f $BOOT/Image.gz-dtb ]; then
+            cp $BOOT/Image.gz-dtb AnyKernel3/
+          elif [ -f $BOOT/Image-dtb ]; then
+            cp $BOOT/Image-dtb AnyKernel3/
+          elif [ -f $BOOT/Image.gz ]; then
+            cp $BOOT/Image.gz AnyKernel3/
+          else
+            cp $BOOT/Image AnyKernel3/
+          fi
+          cd AnyKernel3
+          sed -i 's/^device.name1=.*/device.name1=courbet/' anykernel.sh
+          sed -i 's/^device.name2=.*/device.name2=courbetin/' anykernel.sh
+          sed -i 's/^do.devicecheck=.*/do.devicecheck=0/' anykernel.sh
+          sed -i 's|^block=.*|block=boot;|' anykernel.sh
+          sed -i 's/^is_slot_device=.*/is_slot_device=auto;/' anykernel.sh
+          sed -i 's/^BLOCK=.*/BLOCK=boot;/' anykernel.sh
+          sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=auto;/' anykernel.sh
+          zip -r9 ../KernelSU-Next-Courbet.zip * -x .git README.md
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KernelSU-Next-Courbet
+          path: KernelSU-Next-Courbet.zip
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
