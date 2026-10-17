@@ -12,9 +12,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libncurses5-dev libssl-dev libelf-dev git zip curl wget python3 device-tree-compiler lz4 cpio gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-      - name: Clone Toolchain (AOSP Clang r383902b)
+      - name: Install libtinfo5 (needed by Proton Clang)
         run: |
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r383902b.git clang
+          sudo apt-get install -y libtinfo5 libncurses5 || true
+
+      - name: Clone toolchain (Proton Clang)
+        run: |
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
 
       - name: Clone kernel source
         run: |
@@ -25,7 +29,7 @@ jobs:
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
-      - name: Update defconfig for KSU
+      - name: Enable KSU in defconfig
         run: |
           cd kernel-source
           if [ -f arch/arm64/configs/courbet_user_defconfig ]; then
@@ -34,14 +38,19 @@ jobs:
             DEFCONFIG=arch/arm64/configs/vendor/courbet_user_defconfig
           fi
           echo "Defconfig: $DEFCONFIG"
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "courbet_user_defconfig not found"
+            exit 1
+          fi
           echo "$DEFCONFIG" > ../defconfig_path.txt
-          
           cat >> "$DEFCONFIG" << 'EOF'
           CONFIG_KSU=y
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
           EOF
+          sed -i 's/^[[:space:]]*\(CONFIG_[A-Z_]*=y\)$/\1/' "$DEFCONFIG"
+          tail -n 6 "$DEFCONFIG"
 
       - name: Build kernel
         run: |
@@ -52,9 +61,11 @@ jobs:
           DEFCONFIG=$(cat ../defconfig_path.txt)
           DEFCONFIG_NAME=${DEFCONFIG#arch/arm64/configs/}
 
-          # Remove -Werror and fix assembler flags
-          sed -i 's/-Werror//g' scripts/Makefile.host || true
-          sed -i 's/prepare-compiler-check//g' Makefile || true
+          echo "--- integrated-as references BEFORE fix ---"
+          grep -rIn "integrated-as" Makefile arch/arm64 scripts --include="Makefile*" --include="*.include" --include="*.mk" || echo "none"
+          grep -rIl "integrated-as" Makefile arch/arm64 scripts --include="Makefile*" --include="*.include" --include="*.mk" | xargs -r sed -i 's/-f\?no-integrated-as//g'
+          echo "--- integrated-as references AFTER fix ---"
+          grep -rIn "integrated-as" Makefile arch/arm64 scripts --include="Makefile*" --include="*.include" --include="*.mk" || echo "none"
 
           set -o pipefail
           make O=out ARCH=arm64 "$DEFCONFIG_NAME"
@@ -63,13 +74,13 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            HOSTCC=gcc \
-            HOSTCXX=g++ \
             2>&1 | tee ../build.log || {
               set +e
               set +o pipefail
               echo "=========== BUILD FAILED ==========="
-              tail -n 50 ../build.log
+              grep -n -E "error:|Error |No rule|undefined|fatal" ../build.log | head -n 30
+              echo "=========== LAST 40 LINES ==========="
+              tail -n 40 ../build.log
               exit 1
             }
 
@@ -87,10 +98,24 @@ jobs:
             cp $BOOT/Image AnyKernel3/
           fi
           cd AnyKernel3
+          sed -i 's/^device.name1=.*/device.name1=courbet/' anykernel.sh
+          sed -i 's/^device.name2=.*/device.name2=courbetin/' anykernel.sh
+          sed -i 's/^do.devicecheck=.*/do.devicecheck=0/' anykernel.sh
+          sed -i 's|^block=.*|block=boot;|' anykernel.sh
+          sed -i 's/^is_slot_device=.*/is_slot_device=auto;/' anykernel.sh
+          sed -i 's/^BLOCK=.*/BLOCK=boot;/' anykernel.sh
+          sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=auto;/' anykernel.sh
           zip -r9 ../KernelSU-Next-Courbet.zip * -x .git README.md
 
-      - name: Upload Kernel Artifact
+      - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
           name: KernelSU-Next-Courbet
           path: KernelSU-Next-Courbet.zip
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
