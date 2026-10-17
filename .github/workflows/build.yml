@@ -29,7 +29,7 @@ jobs:
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
-      - name: Enable KSU in defconfig
+      - name: Enable KSU and Disable VDSO in defconfig
         run: |
           cd kernel-source
           if [ -f arch/arm64/configs/courbet_user_defconfig ]; then
@@ -48,9 +48,10 @@ jobs:
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
+          CONFIG_VDSO=n
           EOF
-          sed -i 's/^[[:space:]]*\(CONFIG_[A-Z_]*=y\)$/\1/' "$DEFCONFIG"
-          tail -n 6 "$DEFCONFIG"
+          sed -i 's/^[[:space:]]*\(CONFIG_[A-Z_]*=[yn]\)$/\1/' "$DEFCONFIG"
+          tail -n 8 "$DEFCONFIG"
 
       - name: Build kernel
         run: |
@@ -61,7 +62,6 @@ jobs:
           DEFCONFIG=$(cat ../defconfig_path.txt)
           DEFCONFIG_NAME=${DEFCONFIG#arch/arm64/configs/}
 
-          sed -i 's/-no-integrated-as//g' Makefile arch/arm64/Makefile
           sed -i 's/-Werror//g' scripts/Makefile.host || true
 
           set -o pipefail
