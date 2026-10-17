@@ -48,9 +48,13 @@ jobs:
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
+          # CONFIG_CRYPTO_AES_ARM64_CE_BLK is not set
+          # CONFIG_CRYPTO_AES_ARM64_NEON_BLK is not set
+          # CONFIG_CRYPTO_AES_ARM64_BS is not set
           EOF
-          sed -i 's/^[[:space:]]*\(CONFIG_[A-Z_]*=y\)$/\1/' "$DEFCONFIG"
-          tail -n 6 "$DEFCONFIG"
+          sed -i 's/^[[:space:]]*\(CONFIG_[A-Z_0-9]*=y\)$/\1/' "$DEFCONFIG"
+          sed -i 's/^[[:space:]]*\(# CONFIG_[A-Z_0-9]* is not set\)$/\1/' "$DEFCONFIG"
+          tail -n 8 "$DEFCONFIG"
 
       - name: Build kernel
         run: |
@@ -74,7 +78,7 @@ jobs:
 
           set -o pipefail
           make O=out ARCH=arm64 "$DEFCONFIG_NAME"
-          make -j$(nproc --all) O=out ARCH=arm64 \
+          make -k -j$(nproc --all) O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -84,7 +88,9 @@ jobs:
               set +e
               set +o pipefail
               echo "=========== BUILD FAILED ==========="
-              grep -n -E "error:|Error |No rule|undefined reference|fatal|unrecognised" ../build.log | head -n 30
+              grep -n -E "error:|Error |No rule|undefined reference|fatal|unrecognised" ../build.log | grep -v "extract-cert" | head -n 40
+              echo "=========== aes-modes.S lines 295-302 ==========="
+              sed -n '295,302p' arch/arm64/crypto/aes-modes.S
               exit 1
             }
 
